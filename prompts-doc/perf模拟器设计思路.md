@@ -12,4 +12,13 @@
 
 工作逻辑：
 
+这里采用离散时间时序仿真完成对一个流水线时间的仿真。 
+我们拥有多种硬件资源
+- chiplet InputD2DLink
+- chiplet OutputD2DLink
+- chiplet DRAM 
+    - 使用其带宽资源
+- chiplet MatrixCompute
+- chiplet VectorCompute 
+
 
