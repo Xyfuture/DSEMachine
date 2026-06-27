@@ -29,6 +29,12 @@
 
 
 
+### Mapping Encoding 代码参考 
+
+
+详细看一下 @mapping_tree.py 中的实现。 
+
+
 
 ## 工作逻辑
 
