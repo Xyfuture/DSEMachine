@@ -1,0 +1,18 @@
+{
+  "attn_type": "gqa",
+  "attention_bias": false,
+  "dsa": false,
+  "ffn_type": "dense",
+  "head_dim": 128,
+  "hidden_act": "silu",
+  "hidden_size": 16384,
+  "intermediate_size": 53248,
+  "max_position_embeddings": 131072,
+  "mlp_bias": false,
+  "num_attention_heads": 128,
+  "num_hidden_layers": 126,
+  "num_key_value_heads": 8,
+  "rms_norm_eps": 1e-05,
+  "rope_theta": 500000.0,
+  "use_qk_norm": false
+}
