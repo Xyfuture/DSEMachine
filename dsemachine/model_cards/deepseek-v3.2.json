@@ -2,6 +2,8 @@
   "attn_type": "mla",
   "attention_bias": false,
   "dsa": true,
+  "inderxer_head_dim": 64,
+  "indexer_num_heads": 128,
   "dsa_len": 2048,
   "ffn_type": "moe",
   "hidden_act": "silu",

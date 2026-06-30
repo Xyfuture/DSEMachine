@@ -368,6 +368,8 @@ class DeepseekV32ModelConfig(ModelConfigBase):
     hidden_act: str
     num_nextn_predict_layers: int
     lightning_index_dim: int
+    indexer_num_heads: int
+    indexer_head_dim: int
     dsa_len: int
     topk_sharing: bool
     attn_type: str = field(default="mla", kw_only=True)
@@ -417,6 +419,8 @@ class DeepseekV32ModelConfig(ModelConfigBase):
             hidden_act=_require_hidden_act(reader),
             num_nextn_predict_layers=num_nextn_predict_layers,
             lightning_index_dim=reader.int("lightning_index_dim"),
+            indexer_num_heads=reader.int("indexer_num_heads"),
+            indexer_head_dim=reader.int("inderxer_head_dim"),
             dsa_len=reader.int("dsa_len"),
             topk_sharing=_require_exact_bool(reader, "topk_sharing", False),
             attn_type=_require_exact_str(reader, "attn_type", "mla"),
