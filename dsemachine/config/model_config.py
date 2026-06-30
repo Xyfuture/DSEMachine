@@ -371,7 +371,6 @@ class DeepseekV32ModelConfig(ModelConfigBase):
     rope_theta: float
     hidden_act: str
     num_nextn_predict_layers: int
-    lightning_index_dim: int
     indexer_num_heads: int
     indexer_head_dim: int
     dsa_len: int
@@ -422,9 +421,8 @@ class DeepseekV32ModelConfig(ModelConfigBase):
             rope_theta=reader.float("rope_theta"),
             hidden_act=_require_hidden_act(reader),
             num_nextn_predict_layers=num_nextn_predict_layers,
-            lightning_index_dim=reader.int("lightning_index_dim"),
             indexer_num_heads=reader.int("indexer_num_heads"),
-            indexer_head_dim=reader.int("inderxer_head_dim"),
+            indexer_head_dim=reader.int("indexer_head_dim"),
             dsa_len=reader.int("dsa_len"),
             topk_sharing=_require_exact_bool(reader, "topk_sharing", False),
             attn_type=_require_exact_str(reader, "attn_type", "mla"),
@@ -455,6 +453,8 @@ class Glm52ModelConfig(ModelConfigBase):
     hidden_act: str
     num_nextn_predict_layers: int
     lightning_index_dim: int
+    indexer_num_heads: int
+    indexer_head_dim: int
     dsa_len: int
     topk_sharing: bool
     index_topk_freq: int
@@ -505,6 +505,8 @@ class Glm52ModelConfig(ModelConfigBase):
             hidden_act=_require_hidden_act(reader),
             num_nextn_predict_layers=num_nextn_predict_layers,
             lightning_index_dim=reader.int("lightning_index_dim"),
+            indexer_num_heads=reader.int("indexer_num_heads"),
+            indexer_head_dim=reader.int("indexer_head_dim"),
             dsa_len=reader.int("dsa_len"),
             topk_sharing=_require_exact_bool(reader, "topk_sharing", True),
             index_topk_freq=reader.int("index_topk_freq"),

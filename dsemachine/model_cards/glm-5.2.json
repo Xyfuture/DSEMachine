@@ -6,6 +6,8 @@
   "ffn_type": "moe",
   "hidden_act": "silu",
   "hidden_size": 6144,
+  "indexer_head_dim": 128,
+  "indexer_num_heads": 32,
   "index_topk_freq": 4,
   "intermediate_size": 12288,
   "kv_lora_rank": 512,
