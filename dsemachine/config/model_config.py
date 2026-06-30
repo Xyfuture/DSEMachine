@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# 本文件负责按 model_name 读取 dsemachine/model_cards 下的模型 JSON，
+# 将字段解析并校验为强类型 ModelConfig 对象。
+# model_mapping 等下游模块只消费这里返回的配置对象，不直接处理 model card 文件。
+
 import json
 from dataclasses import dataclass, field
 from pathlib import Path

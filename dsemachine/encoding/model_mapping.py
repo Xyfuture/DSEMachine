@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# 本文件负责把已校验的模型配置、batch/sequence 维度和并行策略，
+# 转换为单层代表 PIM chiplet 视角下的 workload IR。
+# 这里只描述算子结构、局部维度和通信数据量，不读取 model card，也不展开全模型所有层。
+
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TypeAlias
