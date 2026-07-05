@@ -3,7 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from dsemachine.encoding.hardware import HardwareConfig
-from dsemachine.encoding.matrix_mapping import AssignedTile, Dataflow, MatrixShape, ceil_div
+from dsemachine.encoding.matrix_mapping import (
+    AssignedTile,
+    Dataflow,
+    MatrixShape,
+    Tile,
+    ceil_div,
+)
 from dsemachine.perfsim.instructions import Instruction
 
 
@@ -27,7 +33,7 @@ class InputD2DResource(HardwareResource):
     def estimate_cycles(self, instruction: Instruction) -> int:
         shape = _shape(instruction)
         tile = _tile(instruction).tile
-        bytes_count = shape.m * tile.k_size * shape.input_bytes
+        bytes_count = shape.m * _tile_k_elements(tile) * shape.input_bytes
         return ceil_div(bytes_count, self.hw.d2d_input_bytes_per_cycle)
 
 
@@ -35,7 +41,7 @@ class OutputD2DResource(HardwareResource):
     def estimate_cycles(self, instruction: Instruction) -> int:
         shape = _shape(instruction)
         tile = _tile(instruction).tile
-        bytes_count = shape.m * tile.n_size * shape.accumulator_bytes
+        bytes_count = shape.m * _tile_n_elements(tile) * shape.accumulator_bytes
         return ceil_div(bytes_count, self.hw.d2d_output_bytes_per_cycle)
 
 
@@ -43,7 +49,9 @@ class DRAMResource(HardwareResource):
     def estimate_cycles(self, instruction: Instruction) -> int:
         shape = _shape(instruction)
         tile = _tile(instruction).tile
-        bytes_count = tile.k_size * tile.n_size * shape.weight_bytes
+        bytes_count = (
+            _tile_k_elements(tile) * _tile_n_elements(tile) * shape.weight_bytes
+        )
         aligned = ceil_div(bytes_count, self.hw.dram_page_bytes) * self.hw.dram_page_bytes
         return ceil_div(aligned, self.hw.dram_bytes_per_cycle)
 
@@ -52,24 +60,32 @@ class MatrixComputeResource(HardwareResource):
     def estimate_cycles(self, instruction: Instruction) -> int:
         shape = _shape(instruction)
         tile = _tile(instruction).tile
-        dataflow = _dataflow(instruction)
+        dataflow = tile.base_block.dataflow
+        tile_k_elements = _tile_k_elements(tile)
+        tile_n_elements = _tile_n_elements(tile)
         if dataflow is Dataflow.OS:
             return (
                 ceil_div(shape.m, self.hw.sa_m)
-                * ceil_div(tile.k_size, self.hw.pe_m * self.hw.num_sa)
-                * ceil_div(tile.n_size, self.hw.pe_n * self.hw.sa_n)
+                * ceil_div(tile_k_elements, self.hw.pe_m * self.hw.num_sa)
+                * ceil_div(tile_n_elements, self.hw.pe_n * self.hw.sa_n)
             )
         if dataflow is Dataflow.WS:
             return (
                 shape.m
-                * ceil_div(tile.k_size, self.hw.pe_m * self.hw.num_sa * self.hw.sa_m)
-                * ceil_div(tile.n_size, self.hw.pe_n * self.hw.sa_n)
+                * ceil_div(
+                    tile_k_elements,
+                    self.hw.pe_m * self.hw.num_sa * self.hw.sa_m,
+                )
+                * ceil_div(tile_n_elements, self.hw.pe_n * self.hw.sa_n)
             )
         if dataflow is Dataflow.IS:
             return (
-                tile.n_size
+                tile_n_elements
                 * ceil_div(shape.m, self.hw.pe_n * self.hw.sa_n)
-                * ceil_div(tile.k_size, self.hw.pe_m * self.hw.num_sa * self.hw.sa_m)
+                * ceil_div(
+                    tile_k_elements,
+                    self.hw.pe_m * self.hw.num_sa * self.hw.sa_m,
+                )
             )
         raise ValueError(f"unknown dataflow: {dataflow}")
 
@@ -97,8 +113,9 @@ def _tile(instruction: Instruction) -> AssignedTile:
     return value
 
 
-def _dataflow(instruction: Instruction) -> Dataflow:
-    value = instruction.payload["dataflow"]
-    if not isinstance(value, Dataflow):
-        raise ValueError("instruction dataflow payload must be Dataflow")
-    return value
+def _tile_k_elements(tile: Tile) -> int:
+    return tile.num_k_blocks * tile.base_block.k_size_per_block
+
+
+def _tile_n_elements(tile: Tile) -> int:
+    return tile.num_n_blocks * tile.base_block.n_size_per_block

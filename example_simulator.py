@@ -1,5 +1,6 @@
 from dsemachine.encoding.hardware import HardwareConfig
 from dsemachine.encoding.matrix_mapping import (
+    BaseBlock,
     Dataflow,
     MappingLeafNode,
     MappingSplitNode,
@@ -12,11 +13,16 @@ from dsemachine.perfsim.perf_core import simulate_matrix
 
 
 def build_example_mapping() -> MappingSplitNode:
+    base_block = BaseBlock(
+        k_size_per_block=4,
+        n_size_per_block=4,
+        dataflow=Dataflow.OS,
+    )
     root = MappingSplitNode(
         parent=None,
-        rect=Rect(k_size=32, n_size=32),
-        tile_k=16,
-        tile_n=16,
+        rect=Rect(num_k_blocks=8, num_n_blocks=8, base_block=base_block),
+        num_k_blocks_per_tile=4,
+        num_n_blocks_per_tile=4,
         ordering=TileOrdering(num_k_tiles=2, num_n_tiles=2),
     )
 
@@ -53,11 +59,13 @@ def main() -> None:
         print(
             f"  chiplet={assigned.chiplet_id} "
             f"tile_id={tile.tile_id} "
-            f"k=[{tile.k_offset}, {tile.k_offset + tile.k_size}) "
-            f"n=[{tile.n_offset}, {tile.n_offset + tile.n_size})"
+            f"k_blocks=[{tile.k_block_offset}, "
+            f"{tile.k_block_offset + tile.num_k_blocks}) "
+            f"n_blocks=[{tile.n_block_offset}, "
+            f"{tile.n_block_offset + tile.num_n_blocks})"
         )
 
-    result = simulate_matrix(shape, hw, mapping, Dataflow.OS)
+    result = simulate_matrix(shape, hw, mapping)
     trace_path = "example_perf_trace.json"
     result.save_perf_trace(trace_path, ns_per_cycle=1.0)
 

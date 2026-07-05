@@ -7,7 +7,6 @@ from pathlib import Path
 from dsemachine.encoding.hardware import HardwareConfig
 from dsemachine.encoding.matrix_mapping import (
     AssignedTile,
-    Dataflow,
     MappingSplitNode,
     MatrixShape,
     expand_mapping,
@@ -57,18 +56,21 @@ def simulate_matrix(
     shape: MatrixShape,
     hw: HardwareConfig,
     mapping: MappingSplitNode,
-    dataflow: Dataflow,
 ) -> MatrixSimResult:
     if mapping.parent is not None:
         raise ValueError("root mapping node must not have a parent")
     if mapping.tile_ids_from_parent is not None:
         raise ValueError("root mapping node must not have tile_ids_from_parent")
-    if mapping.rect.k_size != shape.k or mapping.rect.n_size != shape.n:
+    base_block = mapping.rect.base_block
+    if (
+        mapping.rect.num_k_blocks * base_block.k_size_per_block < shape.k
+        or mapping.rect.num_n_blocks * base_block.n_size_per_block < shape.n
+    ):
         raise ValueError("root mapping rect must cover the full matrix K/N shape")
 
     assigned_tiles = expand_mapping(mapping, hw)
     resources = _build_resources(hw)
-    instructions = _build_tile_instructions(shape, assigned_tiles, dataflow)
+    instructions = _build_tile_instructions(shape, assigned_tiles)
     instructions.extend(_build_reduction_instructions(shape, assigned_tiles))
 
     engine_result = ExecutionEngine(resources).run(instructions)
@@ -99,7 +101,6 @@ def _build_resources(hw: HardwareConfig) -> dict[str, HardwareResource]:
 def _build_tile_instructions(
     shape: MatrixShape,
     assigned_tiles: list[AssignedTile],
-    dataflow: Dataflow,
 ) -> list[Instruction]:
     instructions: list[Instruction] = []
     for index, assigned in enumerate(assigned_tiles):
@@ -108,7 +109,6 @@ def _build_tile_instructions(
         payload = {
             "shape": shape,
             "tile": assigned,
-            "dataflow": dataflow,
         }
 
         input_id = f"{prefix}.input_d2d"
@@ -159,12 +159,20 @@ def _build_reduction_instructions(
     shape: MatrixShape,
     assigned_tiles: list[AssignedTile],
 ) -> list[Instruction]:
-    groups: dict[tuple[int, int], list[int]] = defaultdict(list)
+    groups: dict[tuple[int, int, int], list[int]] = defaultdict(list)
     for index, assigned in enumerate(assigned_tiles):
-        groups[(assigned.tile.n_offset, assigned.tile.n_size)].append(index)
+        tile = assigned.tile
+        groups[
+            (
+                tile.n_block_offset,
+                tile.num_n_blocks,
+                tile.base_block.n_size_per_block,
+            )
+        ].append(index)
 
     instructions: list[Instruction] = []
-    for reduction_index, ((n_start, n_size), tile_indices) in enumerate(groups.items()):
+    for reduction_index, group in enumerate(groups.items()):
+        (n_start, num_n_blocks, n_size_per_block), tile_indices = group
         if len(tile_indices) <= 1:
             continue
         deps = tuple(f"tile{tile_index}.output_d2d" for tile_index in tile_indices)
@@ -176,8 +184,8 @@ def _build_reduction_instructions(
                 deps=deps,
                 payload={
                     "shape": shape,
-                    "n_start": n_start,
-                    "n_size": n_size,
+                    "n_start": n_start * n_size_per_block,
+                    "n_size": num_n_blocks * n_size_per_block,
                     "num_partials": len(tile_indices),
                 },
             )

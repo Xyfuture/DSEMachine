@@ -23,6 +23,17 @@ class Dataflow(Enum):
 
 
 @dataclass(frozen=True)
+class BaseBlock:
+    k_size_per_block: int
+    n_size_per_block: int
+    dataflow: Dataflow
+
+    def __post_init__(self) -> None:
+        if self.k_size_per_block <= 0 or self.n_size_per_block <= 0:
+            raise ValueError("base block size must be positive")
+
+
+@dataclass(frozen=True)
 class MatrixShape:
     m: int
     k: int
@@ -39,13 +50,17 @@ class MatrixShape:
 
 @dataclass(frozen=True)
 class Rect:
-    k_size: int
-    n_size: int
+    """
+    一个等待分割的 rectangle, 是 SplitNode 操作的对象
+    """
+    num_k_blocks: int
+    num_n_blocks: int
+    base_block: BaseBlock
     rect_id: int = field(init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "rect_id", next(_rect_id_counter))
-        if self.k_size <= 0 or self.n_size <= 0:
+        if self.num_k_blocks <= 0 or self.num_n_blocks <= 0:
             raise ValueError("rect size must be positive")
 
 
@@ -54,28 +69,20 @@ class Tile:
     rect_id: int
     tile_id: int
     coordinate: tuple[int, int]
-    k_offset: int
-    n_offset: int
-    k_size: int
-    n_size: int
+    k_block_offset: int
+    n_block_offset: int
+    num_k_blocks: int
+    num_n_blocks: int
+    base_block: BaseBlock
 
     def __post_init__(self) -> None:
         if self.rect_id < 0:
             raise ValueError("rect id must be non-negative")
         if self.tile_id < 0:
             raise ValueError("tile id must be non-negative")
-        if (
-            not isinstance(self.coordinate, tuple)
-            or len(self.coordinate) != 2
-            or not isinstance(self.coordinate[0], int)
-            or not isinstance(self.coordinate[1], int)
-            or self.coordinate[0] < 0
-            or self.coordinate[1] < 0
-        ):
-            raise ValueError("tile coordinate must be a non-negative (k_id, n_id) tuple")
-        if self.k_offset < 0 or self.n_offset < 0:
+        if self.k_block_offset < 0 or self.n_block_offset < 0:
             raise ValueError("tile offset must be non-negative")
-        if self.k_size <= 0 or self.n_size <= 0:
+        if self.num_k_blocks <= 0 or self.num_n_blocks <= 0:
             raise ValueError("tile size must be positive")
 
 
@@ -150,17 +157,17 @@ class MappingLeafNode(MappingTreeNode):
 class MappingSplitNode(MappingTreeNode):
     parent: "MappingSplitNode | None" = field(repr=False)
     rect: Rect
-    tile_k: int
-    tile_n: int
+    num_k_blocks_per_tile: int
+    num_n_blocks_per_tile: int
     ordering: TileOrdering
     children: tuple[MappingTreeNode, ...] = ()
     tile_ids_from_parent: tuple[int, ...] | None = None
 
     def __post_init__(self) -> None:
-        if self.tile_k <= 0 or self.tile_n <= 0:
+        if self.num_k_blocks_per_tile <= 0 or self.num_n_blocks_per_tile <= 0:
             raise ValueError("tile size must be positive")
-        expected_k = ceil_div(self.rect.k_size, self.tile_k)
-        expected_n = ceil_div(self.rect.n_size, self.tile_n)
+        expected_k = ceil_div(self.rect.num_k_blocks, self.num_k_blocks_per_tile)
+        expected_n = ceil_div(self.rect.num_n_blocks, self.num_n_blocks_per_tile)
         if self.ordering.num_k_tiles != expected_k:
             raise ValueError("ordering num_k_tiles does not match split rect")
         if self.ordering.num_n_tiles != expected_n:
@@ -186,8 +193,8 @@ def expand_mapping(root: MappingSplitNode, hw: HardwareConfig) -> list[AssignedT
 def _expand_split(
     node: MappingSplitNode,
     hw: HardwareConfig,
-    global_k_start: int,
-    global_n_start: int,
+    global_k_block_start: int,
+    global_n_block_start: int,
     assigned: list[AssignedTile],
 ) -> None:
     if not node.children:
@@ -212,10 +219,11 @@ def _expand_split(
                             rect_id=tile.rect_id,
                             tile_id=tile.tile_id,
                             coordinate=tile.coordinate,
-                            k_offset=global_k_start + tile.k_offset,
-                            n_offset=global_n_start + tile.n_offset,
-                            k_size=tile.k_size,
-                            n_size=tile.n_size,
+                            k_block_offset=global_k_block_start + tile.k_block_offset,
+                            n_block_offset=global_n_block_start + tile.n_block_offset,
+                            num_k_blocks=tile.num_k_blocks,
+                            num_n_blocks=tile.num_n_blocks,
+                            base_block=tile.base_block,
                         ),
                     )
                 )
@@ -230,8 +238,8 @@ def _expand_split(
             _expand_split(
                 child,
                 hw,
-                global_k_start + k_offset,
-                global_n_start + n_offset,
+                global_k_block_start + k_offset,
+                global_n_block_start + n_offset,
                 assigned,
             )
         else:
@@ -244,17 +252,24 @@ def split_rect_to_tiles(node: MappingSplitNode) -> list[Tile]:
     tiles: list[Tile] = []
     for tile_id in range(node.ordering.num_tiles):
         k_id, n_id = node.ordering.id_to_coord(tile_id)
-        k_offset = k_id * node.tile_k
-        n_offset = n_id * node.tile_n
+        k_block_offset = k_id * node.num_k_blocks_per_tile
+        n_block_offset = n_id * node.num_n_blocks_per_tile
         tiles.append(
             Tile(
                 rect_id=node.rect.rect_id,
                 tile_id=tile_id,
                 coordinate=(k_id, n_id),
-                k_offset=k_offset,
-                n_offset=n_offset,
-                k_size=min(node.tile_k, node.rect.k_size - k_offset),
-                n_size=min(node.tile_n, node.rect.n_size - n_offset),
+                k_block_offset=k_block_offset,
+                n_block_offset=n_block_offset,
+                num_k_blocks=min(
+                    node.num_k_blocks_per_tile,
+                    node.rect.num_k_blocks - k_block_offset,
+                ),
+                num_n_blocks=min(
+                    node.num_n_blocks_per_tile,
+                    node.rect.num_n_blocks - n_block_offset,
+                ),
+                base_block=node.rect.base_block,
             )
         )
     return tiles
@@ -279,13 +294,17 @@ def merge_tiles_to_rect(tiles: list[Tile]) -> tuple[Rect, int, int]:
     if not tiles:
         raise ValueError("tiles must not be empty")
 
-    k_start = min(tile.k_offset for tile in tiles)
-    n_start = min(tile.n_offset for tile in tiles)
-    k_end = max(tile.k_offset + tile.k_size for tile in tiles)
-    n_end = max(tile.n_offset + tile.n_size for tile in tiles)
-    area = sum(tile.k_size * tile.n_size for tile in tiles)
-    merged = Rect(k_size=k_end - k_start, n_size=n_end - n_start)
-    if area != merged.k_size * merged.n_size:
+    k_start = min(tile.k_block_offset for tile in tiles)
+    n_start = min(tile.n_block_offset for tile in tiles)
+    k_end = max(tile.k_block_offset + tile.num_k_blocks for tile in tiles)
+    n_end = max(tile.n_block_offset + tile.num_n_blocks for tile in tiles)
+    area = sum(tile.num_k_blocks * tile.num_n_blocks for tile in tiles)
+    merged = Rect(
+        num_k_blocks=k_end - k_start,
+        num_n_blocks=n_end - n_start,
+        base_block=tiles[0].base_block,
+    )
+    if area != merged.num_k_blocks * merged.num_n_blocks:
         raise ValueError("tiles must form a rectangle")
     return merged, k_start, n_start
 
@@ -300,4 +319,8 @@ def _validate_child_tile_coverage(
 
 
 def _same_rect_shape(a: Rect, b: Rect) -> bool:
-    return a.k_size == b.k_size and a.n_size == b.n_size
+    return (
+        a.num_k_blocks == b.num_k_blocks
+        and a.num_n_blocks == b.num_n_blocks
+        and a.base_block == b.base_block
+    )

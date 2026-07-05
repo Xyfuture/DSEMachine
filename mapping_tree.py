@@ -1,5 +1,6 @@
 from dsemachine.encoding.matrix_mapping import (
     AssignedTile,
+    BaseBlock,
     Dataflow,
     MappingLeafNode,
     MappingSplitNode,
@@ -16,6 +17,7 @@ from dsemachine.encoding.matrix_mapping import (
 
 __all__ = [
     "AssignedTile",
+    "BaseBlock",
     "Dataflow",
     "MappingLeafNode",
     "MappingSplitNode",

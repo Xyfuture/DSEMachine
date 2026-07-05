@@ -51,6 +51,11 @@ dsemachine/perfsim/perf_core.py
 Dataflow:
   OS / WS / IS
 
+BaseBlock:
+  k_size_per_block
+  n_size_per_block
+  dataflow
+
 MatrixShape:
   m, k, n
   input_bytes
@@ -59,17 +64,19 @@ MatrixShape:
 
 Rect:
   rect_id
-  k_size
-  n_size
+  num_k_blocks
+  num_n_blocks
+  base_block
 
 Tile:
   rect_id
   tile_id
   coordinate
-  k_offset
-  n_offset
-  k_size
-  n_size
+  k_block_offset
+  n_block_offset
+  num_k_blocks
+  num_n_blocks
+  base_block
 
 TileOrdering:
   num_k_tiles
@@ -82,8 +89,8 @@ TileOrdering:
 MappingSplitNode:
   parent
   rect
-  tile_k
-  tile_n
+  num_k_blocks_per_tile
+  num_n_blocks_per_tile
   ordering
   children
   tile_ids_from_parent
@@ -96,9 +103,11 @@ MappingLeafNode:
 
 `TileOrdering` 通过函数计算 `(k_tile_id, n_tile_id) <-> linear_tile_id`，不保存 dict。这样 encoding 只描述规则，不枚举完整映射表。
 
-`Rect` 是 `MappingSplitNode` 持有的待切分 K/N shape，不记录 start。`rect_id` 在创建 `Rect` 时自动自增生成。`Tile` 是该 split node 从自己的 `Rect` 切出来的局部基本单位，不包含 `Rect`。
+`BaseBlock` 是 PIM chiplet 一次执行的最小 block，记录真实 K/N 元素尺寸和 dataflow。
 
-`Tile.rect_id` 表示该 tile 来自哪个 `Rect`。`Tile.tile_id` 是所属 rect 的局部 linear id。`Tile.coordinate` 是所属 rect tile grid 中的 `(k_id, n_id)`。
+`Rect` 是 `MappingSplitNode` 持有的待切分 block 网格，不记录 start。`rect_id` 在创建 `Rect` 时自动自增生成。`Rect.num_k_blocks/num_n_blocks` 表示该 rect 包含多少个 base block。
+
+`Tile` 是该 split node 从自己的 `Rect` 切出来的局部 block 网格。`Tile.rect_id` 表示该 tile 来自哪个 `Rect`。`Tile.tile_id` 是所属 rect 的局部 linear id。`Tile.coordinate` 是所属 rect tile grid 中的 `(k_id, n_id)`。`k_block_offset/n_block_offset` 表示全局 block offset。
 
 `MappingSplitNode` 表示一个 `Rect` 继续被切分。`MappingLeafNode` 表示 parent split node 下的一组 tile 被分配给某个 PIM chiplet。
 
@@ -117,7 +126,7 @@ AssignedTile:
   tile
 ```
 
-`AssignedTile.tile` 是展开后给 simulator 执行的 tile。它保留原始 `rect_id/tile_id/coordinate/k_size/n_size`，其中 `k_offset/n_offset` 表示全局 K/N offset。
+`AssignedTile.tile` 是展开后给 simulator 执行的 tile。它保留原始 `rect_id/tile_id/coordinate/num_k_blocks/num_n_blocks/base_block`，其中 `k_block_offset/n_block_offset` 表示全局 block offset。
 
 非法情况直接报错，包括：
 
@@ -216,6 +225,9 @@ Compute   -> OutputD2D
 每个 tile 的数据量：
 
 ```text
+tile_K = num_k_blocks * base_block.k_size_per_block
+tile_N = num_n_blocks * base_block.n_size_per_block
+
 input_bytes  = M * tile_K * input_bytes
 weight_bytes = tile_K * tile_N * weight_bytes
 output_bytes = M * tile_N * accumulator_bytes
@@ -264,7 +276,7 @@ tile_N
 
 如果同一个 output `N` 区间由多个 `K` tile 产生，则需要 IO reduction。
 
-模拟器根据 `AssignedTile.tile` 的 `(n_offset, n_size)` 分组：
+模拟器根据 `AssignedTile.tile` 的 `(n_block_offset, num_n_blocks, base_block.n_size_per_block)` 分组：
 
 - 同组只有一个 tile 时，不生成 reduction；
 - 同组有多个 tile 时，生成一条 `IOReductionInst`；
@@ -296,7 +308,6 @@ simulate_matrix(
     shape: MatrixShape,
     hw: HardwareConfig,
     mapping: MappingSplitNode,
-    dataflow: Dataflow,
 ) -> MatrixSimResult
 ```
 
