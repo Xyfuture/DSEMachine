@@ -397,9 +397,9 @@ def _build_gqa_attention_ops(
     local_bs = ceil_div_expr(bs, num_of_chip)
     local_seq_len = ceil_div_expr(seq_len, num_of_chip)
     local_kv_heads = ceil_div_expr(num_key_value_heads, num_of_chip)
-    local_qk_norm_heads = ceil_div_expr(num_attention_heads + num_key_value_heads, num_of_chip)
     local_hidden_size = ceil_div_expr(hidden_size, num_of_chip)
-    qkv_proj_width = hidden_size + 2 * num_key_value_heads * head_dim
+    attention_output_width = num_attention_heads * head_dim
+    qkv_proj_width = (num_attention_heads + 2 * num_key_value_heads) * head_dim
     local_qkv_proj_width = mul_expr(local_kv_heads, grouped_heads + 2, head_dim)
     pre_m = _local_bs_for_strategy(bs, num_of_chip, attn_strategy)
 
@@ -444,7 +444,7 @@ def _build_gqa_attention_ops(
     elif attn_strategy is AttnParallelStrategy.CP:
         qk_norm_m = mul_expr(bs, num_attention_heads + num_key_value_heads)
     else:
-        qk_norm_m = mul_expr(bs, local_qk_norm_heads)
+        qk_norm_m = mul_expr(bs, local_kv_heads, grouped_heads + 1)
 
     if model_config.use_qk_norm:
         ops.append(
@@ -497,13 +497,13 @@ def _build_gqa_attention_ops(
             b=1,
             m=local_bs,
             n=hidden_size,
-            k=hidden_size,
+            k=attention_output_width,
             dtype_bytes=dtype_bytes,
         )
     elif attn_strategy is AttnParallelStrategy.CP:
         attention_to_o_proj_comm = [
             _chip_output(mul_expr(dtype_bytes, bs, num_attention_heads, head_dim)),
-            _chip_input(mul_expr(dtype_bytes, local_bs, hidden_size)),
+            _chip_input(mul_expr(dtype_bytes, local_bs, attention_output_width)),
         ]
         qk_bmm = _build_bmm_op(
             "qk",
@@ -533,13 +533,13 @@ def _build_gqa_attention_ops(
             b=1,
             m=local_bs,
             n=hidden_size,
-            k=hidden_size,
+            k=attention_output_width,
             dtype_bytes=dtype_bytes,
         )
     else:
         attention_to_o_proj_comm = [
             _chip_output(mul_expr(dtype_bytes, bs, local_kv_heads, grouped_heads, head_dim)),
-            _chip_input(mul_expr(dtype_bytes, bs, hidden_size)),
+            _chip_input(mul_expr(dtype_bytes, bs, attention_output_width)),
         ]
         qk_bmm = _build_bmm_op(
             "qk",
@@ -569,7 +569,7 @@ def _build_gqa_attention_ops(
             b=1,
             m=bs,
             n=local_hidden_size,
-            k=hidden_size,
+            k=attention_output_width,
             dtype_bytes=dtype_bytes,
         )
 
@@ -607,6 +607,8 @@ def _build_gqa_attention_ops(
 def _build_dense_ffn_ops(
     request: ModelMappingRequest,
     model_config: ModelConfigBase,
+    *,
+    tail_uses_local_bs: bool = False,
 ) -> tuple[LayerOp, ...]:
     bs = request.batch_size
     dtype_bytes = request.dtype_bytes
@@ -614,6 +616,8 @@ def _build_dense_ffn_ops(
     hidden_size = _require_model_int_attr(model_config, "hidden_size")
     intermediate_size = _require_model_int_attr(model_config, "intermediate_size")
 
+    local_bs = ceil_div_expr(bs, num_of_chip)
+    tail_m = local_bs if tail_uses_local_bs else bs
     local_intermediate_size = ceil_div_expr(intermediate_size, num_of_chip)
     local_two_intermediate_size = ceil_div_expr(2 * intermediate_size, num_of_chip)
 
@@ -649,15 +653,17 @@ def _build_dense_ffn_ops(
             ),
         ),
         _chip_output(mul_expr(dtype_bytes, bs, hidden_size)),
-        _chip_input(mul_expr(dtype_bytes, bs, hidden_size)),
-        _build_vector_op("residual", IO_DIE, m=bs, n=hidden_size, dtype_bytes=dtype_bytes),
-        _chip_output(mul_expr(dtype_bytes, bs, hidden_size)),
+        _chip_input(mul_expr(dtype_bytes, tail_m, hidden_size)),
+        _build_vector_op("residual", IO_DIE, m=tail_m, n=hidden_size, dtype_bytes=dtype_bytes),
+        _chip_output(mul_expr(dtype_bytes, tail_m, hidden_size)),
     )
 
 
 def _build_moe_ffn_ops(
     request: ModelMappingRequest,
     model_config: ModelConfigBase,
+    *,
+    tail_uses_local_bs: bool = False,
 ) -> tuple[LayerOp, ...]:
     # 当前 MoE 只建模 routed experts 已经选定后的核心计算；
     # shared expert、router、expert top-k selection、dispatch/combine 都暂时忽略。
@@ -668,6 +674,8 @@ def _build_moe_ffn_ops(
     moe_intermediate_size = _require_model_int_attr(model_config, "moe_intermediate_size")
     num_experts_per_tok = _require_model_int_attr(model_config, "num_experts_per_tok")
 
+    local_bs = ceil_div_expr(bs, num_of_chip)
+    tail_m = local_bs if tail_uses_local_bs else bs
     local_num_experts_per_tok = ceil_div_expr(num_experts_per_tok, num_of_chip)
     local_moe_intermediate_size = ceil_div_expr(moe_intermediate_size, num_of_chip)
     local_two_moe_intermediate_size = ceil_div_expr(2 * moe_intermediate_size, num_of_chip)
@@ -729,9 +737,9 @@ def _build_moe_ffn_ops(
         _chip_input(mul_expr(dtype_bytes, bs, hidden_size)),
         FFNCoreOp(op_kind="ffn_core", location=PIM_CHIPLETS, sub_ops=sub_ops),
         _chip_output(mul_expr(dtype_bytes, bs, hidden_size)),
-        _chip_input(mul_expr(dtype_bytes, bs, hidden_size)),
-        _build_vector_op("residual", IO_DIE, m=bs, n=hidden_size, dtype_bytes=dtype_bytes),
-        _chip_output(mul_expr(dtype_bytes, bs, hidden_size)),
+        _chip_input(mul_expr(dtype_bytes, tail_m, hidden_size)),
+        _build_vector_op("residual", IO_DIE, m=tail_m, n=hidden_size, dtype_bytes=dtype_bytes),
+        _chip_output(mul_expr(dtype_bytes, tail_m, hidden_size)),
     )
 
 
@@ -1067,14 +1075,14 @@ def build_model_mapping_ir(request: ModelMappingRequest) -> ModelMappingIR:
     if model_config.attn_type == "gqa":
         ops = list(_build_gqa_attention_ops(request, model_config))
         if model_config.ffn_type == "dense":
-            ops.extend(_build_dense_ffn_ops(request, model_config))
+            ops.extend(_build_dense_ffn_ops(request, model_config, tail_uses_local_bs=True))
         elif model_config.ffn_type == "moe":
-            ops.extend(_build_moe_ffn_ops(request, model_config))
+            ops.extend(_build_moe_ffn_ops(request, model_config, tail_uses_local_bs=True))
         else:
             raise NotImplementedError(f"Unsupported ffn_type: {model_config.ffn_type}")
     elif model_config.attn_type == "mla" and request.model_name in {"deepseek-v3", "deepseek-v3.2"}:
         ops = list(_build_mla_attention_ops(request, model_config))
-        ops.extend(_build_moe_ffn_ops(request, model_config))
+        ops.extend(_build_moe_ffn_ops(request, model_config, tail_uses_local_bs=True))
     else:
         raise NotImplementedError(f"Unsupported attention type: {model_config.attn_type}")
 
